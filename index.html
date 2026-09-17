@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>실시간 회의 통역</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0f1417;
+    --surface: #171f23;
+    --surface-2: #1e282d;
+    --border: #2a363c;
+    --text: #e7edf0;
+    --text-dim: #8fa0a7;
+    --accent: #45b8ac;
+    --accent-dim: #2d7a72;
+    --warn: #e0a458;
+    --danger: #e0665a;
+    --live-dot: #e0665a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f7f7;
+      --surface: #ffffff;
+      --surface-2: #eef2f2;
+      --border: #d8e0e0;
+      --text: #142023;
+      --text-dim: #5c6f74;
+      --accent: #12817e;
+      --accent-dim: #0d5f5c;
+      --warn: #b5761f;
+      --danger: #c94f43;
+      --live-dot: #c94f43;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f7f7;
+    --surface: #ffffff;
+    --surface-2: #eef2f2;
+    --border: #d8e0e0;
+    --text: #142023;
+    --text-dim: #5c6f74;
+    --accent: #12817e;
+    --accent-dim: #0d5f5c;
+    --warn: #b5761f;
+    --danger: #c94f43;
+    --live-dot: #c94f43;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans KR', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    padding-inline: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    padding-block: 18px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .brand h1 {
+    font-family: 'Sora', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .brand span.tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  button {
+    font-family: 'Sora', sans-serif;
+    font-weight: 600;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 9px 14px;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+  button:hover { filter: brightness(1.12); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #toggleBtn {
+    background: var(--accent);
+    color: #06211f;
+    border-color: var(--accent-dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 128px;
+    justify-content: center;
+  }
+  #toggleBtn.listening {
+    background: var(--danger);
+    color: #2a0b08;
+    border-color: var(--danger);
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor;
+    opacity: 0.85;
+  }
+  #toggleBtn.listening .dot { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1.15); }
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding-block: 14px;
+    gap: 10px;
+  }
+
+  #status {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    min-height: 18px;
+  }
+  #status.warn { color: var(--warn); }
+  #status.err { color: var(--danger); }
+
+  #transcript {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 10px;
+    padding-bottom: 12px;
+  }
+  #transcript::-webkit-scrollbar { width: 8px; }
+  #transcript::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .entry {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .entry .ko {
+    font-size: 17px;
+    line-height: 1.5;
+    font-weight: 500;
+  }
+  .entry .orig {
+    margin-top: 6px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    line-height: 1.4;
+  }
+  .entry .meta {
+    margin-top: 8px;
+    font-size: 10.5px;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .entry.pending .ko { color: var(--text-dim); font-style: italic; }
+  .entry.interim {
+    border-style: dashed;
+    opacity: 0.75;
+  }
+  .entry.interim .ko { font-size: 14px; }
+
+  #empty {
+    margin: auto;
+    text-align: center;
+    color: var(--text-dim);
+    max-width: 360px;
+    padding-block: 40px;
+  }
+  #empty h2 {
+    font-family: 'Sora', sans-serif;
+    font-size: 16px;
+    color: var(--text);
+    margin: 0 0 8px;
+  }
+  #empty p { font-size: 13px; line-height: 1.6; margin: 0; }
+
+  footer {
+    padding-block: 10px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  @media (max-width: 480px) {
+    header { padding-block: 14px 10px; }
+    .controls { width: 100%; justify-content: space-between; }
+    #toggleBtn { flex: 1; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>실시간 회의 통역</h1>
+    <span class="tag">LIVE STT → KO</span>
+  </div>
+  <div class="controls">
+    <select id="langSelect" aria-label="상대방 언어 선택">
+      <option value="en-US">영어 (English)</option>
+      <option value="ja-JP">일본어 (日本語)</option>
+      <option value="zh-CN">중국어 (中文)</option>
+      <option value="vi-VN">베트남어 (Tiếng Việt)</option>
+      <option value="de-DE">독일어 (Deutsch)</option>
+      <option value="fr-FR">프랑스어 (Français)</option>
+      <option value="es-ES">스페인어 (Español)</option>
+      <option value="th-TH">태국어 (ไทย)</option>
+      <option value="id-ID">인도네시아어 (Indonesia)</option>
+      <option value="ru-RU">러시아어 (Русский)</option>
+    </select>
+    <button id="toggleBtn"><span class="dot"></span><span id="toggleLabel">리스닝 시작</span></button>
+  </div>
+</header>
+
+<main>
+  <div id="status">브라우저 확인 중…</div>
+  <div id="transcript">
+    <div id="empty">
+      <h2>고객사 미팅 준비 완료</h2>
+      <p>상대방 언어를 선택하고 "리스닝 시작"을 누르세요.<br>
+      들리는 외국어 음성이 한글 텍스트로만 표시됩니다 (음성 출력 없음).</p>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <button id="copyBtn">전체 복사</button>
+  <button id="clearBtn">지우기</button>
+</footer>
+
+<script>
+(function () {
+  var statusEl = document.getElementById('status');
+  var transcriptEl = document.getElementById('transcript');
+  var emptyEl = document.getElementById('empty');
+  var toggleBtn = document.getElementById('toggleBtn');
+  var toggleLabel = document.getElementById('toggleLabel');
+  var langSelect = document.getElementById('langSelect');
+  var copyBtn = document.getElementById('copyBtn');
+  var clearBtn = document.getElementById('clearBtn');
+
+  var SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var recognition = null;
+  var listening = false;      // user intent: should we be listening
+  var recognizing = false;    // engine actually running right now
+  var restartTimer = null;
+  var stallTimer = null;
+  var consecutiveErrors = 0;
+  var interimEntryEl = null;
+  var interimDebounce = null;
+  var interimSeq = 0; // guards against a stale translation overwriting a newer one
+  var history = []; // {orig, ko, time}
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = kind || '';
+  }
+
+  function fmtTime(d) {
+    var h = d.getHours().toString().padStart(2, '0');
+    var m = d.getMinutes().toString().padStart(2, '0');
+    return h + ':' + m;
+  }
+
+  function langLabel() {
+    return langSelect.options[langSelect.selectedIndex].text;
+  }
+
+  function ensureEmptyHidden() {
+    if (emptyEl && emptyEl.parentNode) emptyEl.remove();
+  }
+
+  function renderInterim(text) {
+    ensureEmptyHidden();
+    if (!interimEntryEl) {
+      interimEntryEl = document.createElement('div');
+      interimEntryEl.className = 'entry interim';
+      transcriptEl.insertBefore(interimEntryEl, transcriptEl.firstChild);
+    }
+    // Show the partial original immediately, keep whatever Korean translation
+    // is already on screen (it will be refreshed by the debounced call below).
+    var existingKo = interimEntryEl.querySelector('.ko');
+    var koText = existingKo && existingKo.dataset.real ? existingKo.textContent : '번역 중…';
+    interimEntryEl.innerHTML =
+      '<div class="ko" data-real="0">' + escapeHtml(koText) + '</div>' +
+      '<div class="orig">' + escapeHtml(text) + '</div>';
+
+    var mySeq = ++interimSeq;
+    clearTimeout(interimDebounce);
+    interimDebounce = setTimeout(function () {
+      if (mySeq !== interimSeq || !interimEntryEl) return; // superseded by newer speech
+      translateToKorean(text, langSelect.value)
+        .then(function (ko) {
+          if (mySeq !== interimSeq || !interimEntryEl) return; // stale response, ignore
+          var koEl = interimEntryEl.querySelector('.ko');
+          if (koEl) { koEl.textContent = ko; koEl.dataset.real = '1'; }
+        })
+        .catch(function () { /* leave last good translation showing */ });
+    }, 350); // debounce so we don't fire a request on every single word
+  }
+
+  function clearInterim() {
+    clearTimeout(interimDebounce);
+    if (interimEntryEl) {
+      interimEntryEl.remove();
+      interimEntryEl = null;
+    }
+  }
+
+  function addFinalEntry(origText) {
+    ensureEmptyHidden();
+    clearInterim();
+    var item = { orig: origText, ko: null, time: new Date(), lang: langLabel() };
+    history.push(item);
+
+    var el = document.createElement('div');
+    el.className = 'entry pending';
+    el.innerHTML =
+      '<div class="ko">번역 중…</div>' +
+      '<div class="orig">' + escapeHtml(origText) + '</div>' +
+      '<div class="meta"><span>' + fmtTime(item.time) + '</span><span>·</span><span>' + item.lang + '</span></div>';
+    transcriptEl.insertBefore(el, transcriptEl.firstChild);
+
+    translateToKorean(origText, langSelect.value)
+      .then(function (ko) {
+        item.ko = ko;
+        el.classList.remove('pending');
+        el.querySelector('.ko').textContent = ko;
+      })
+      .catch(function () {
+        el.classList.remove('pending');
+        el.querySelector('.ko').textContent = '(번역 실패 — 원문만 표시됩니다)';
+      });
+  }
+
+  function escapeHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // Google's public "gtx" translate endpoint (no key, CORS-enabled) — used first
+  // because it gives real machine translation instead of crowd-sourced phrase
+  // matches, which were producing garbled/romanized results for short sentences.
+  function translateGoogle(text, srcCode) {
+    var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=' +
+      encodeURIComponent(srcCode) + '&tl=ko&dt=t&q=' + encodeURIComponent(text);
+    return fetch(url)
+      .then(function (r) {
+        if (!r.ok) throw new Error('google http ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (!data || !data[0]) throw new Error('no translation');
+        var ko = data[0].map(function (seg) { return seg[0]; }).join('');
+        if (!ko.trim()) throw new Error('empty translation');
+        return ko;
+      });
+  }
+
+  // MyMemory fallback (no key required, CORS-enabled) — only used if Google's
+  // endpoint is unreachable, since its results are less reliable on their own.
+  function translateMyMemory(text, srcCode) {
+    var url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) +
+      '&langpair=' + srcCode + '|ko';
+    return fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.responseData && data.responseData.translatedText) {
+          return data.responseData.translatedText;
+        }
+        throw new Error('no translation');
+      });
+  }
+
+  function translateToKorean(text, sourceLangTag) {
+    var srcCode = sourceLangTag.split('-')[0];
+    return translateGoogle(text, srcCode).catch(function () {
+      return translateMyMemory(text, srcCode);
+    });
+  }
+
+  function buildRecognition() {
+    var r = new SpeechRecognitionImpl();
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+    r.lang = langSelect.value;
+
+    r.onstart = function () {
+      recognizing = true;
+      consecutiveErrors = 0;
+      clearTimeout(stallTimer);
+      setStatus('리스닝 중 · ' + langLabel() + ' 인식 대기');
+    };
+
+    r.onresult = function (event) {
+      var interimText = '';
+      for (var i = event.resultIndex; i < event.results.length; i++) {
+        var res = event.results[i];
+        if (res.isFinal) {
+          var finalText = res[0].transcript.trim();
+          if (finalText) addFinalEntry(finalText);
+        } else {
+          interimText += res[0].transcript;
+        }
+      }
+      if (interimText.trim()) {
+        renderInterim(interimText.trim());
+      }
+    };
+
+    r.onerror = function (event) {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setStatus('마이크 권한이 필요합니다. 브라우저 설정에서 허용해주세요.', 'err');
+        listening = false;
+        updateToggleUI();
+      } else if (event.error === 'no-speech') {
+        // benign — will auto-restart via onend
+      } else {
+        consecutiveErrors++;
+        setStatus('인식 오류: ' + event.error, 'warn');
+      }
+    };
+
+    r.onend = function () {
+      recognizing = false;
+      clearInterim();
+      if (listening) {
+        // Engines (esp. iOS/iPadOS Safari) stop recognition after every pause —
+        // restart to stay "always on". Back off a bit if it's failing repeatedly
+        // instead of hammering start() in a tight loop.
+        var delay = Math.min(200 + consecutiveErrors * 400, 2000);
+        restartTimer = setTimeout(function () {
+          if (listening) startRecognitionEngine();
+        }, delay);
+      } else {
+        setStatus('중지됨');
+      }
+    };
+
+    return r;
+  }
+
+  function showResumePrompt(msg) {
+    statusEl.className = 'warn';
+    statusEl.textContent = '';
+    statusEl.appendChild(document.createTextNode(msg + ' '));
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '탭하여 계속 듣기';
+    btn.style.marginLeft = '6px';
+    btn.style.fontSize = '11px';
+    btn.style.padding = '3px 10px';
+    btn.style.verticalAlign = 'middle';
+    btn.addEventListener('click', function () {
+      clearTimeout(stallTimer);
+      clearTimeout(restartTimer);
+      setStatus('다시 연결 중…');
+      startRecognitionEngine();
+    });
+    statusEl.appendChild(btn);
+  }
+
+  function startRecognitionEngine() {
+    if (recognizing) return; // already running — avoid InvalidStateError
+    try {
+      recognition = buildRecognition();
+      recognition.start();
+      clearTimeout(stallTimer);
+      // Some browsers (notably iOS/iPadOS Safari) silently refuse to (re)start
+      // recognition outside of a direct user tap. If onstart never fires,
+      // surface a button so the user can resume with one tap.
+      stallTimer = setTimeout(function () {
+        if (listening && !recognizing) {
+          showResumePrompt('리스닝이 멈췄어요.');
+        }
+      }, 2500);
+    } catch (e) {
+      if (e && e.name === 'InvalidStateError') return; // already running
+      showResumePrompt('시작 실패: ' + e.message + '.');
+    }
+  }
+
+  function updateToggleUI() {
+    if (listening) {
+      toggleBtn.classList.add('listening');
+      toggleLabel.textContent = '리스닝 중지';
+      langSelect.disabled = true;
+    } else {
+      toggleBtn.classList.remove('listening');
+      toggleLabel.textContent = '리스닝 시작';
+      langSelect.disabled = false;
+    }
+  }
+
+  toggleBtn.addEventListener('click', function () {
+    if (!SpeechRecognitionImpl) return;
+    if (!listening) {
+      listening = true;
+      updateToggleUI();
+      startRecognitionEngine();
+    } else {
+      listening = false;
+      updateToggleUI();
+      clearTimeout(restartTimer);
+      clearTimeout(stallTimer);
+      if (recognition) {
+        try { recognition.stop(); } catch (e) {}
+      }
+      setStatus('중지됨');
+    }
+  });
+
+  copyBtn.addEventListener('click', function () {
+    var lines = history.map(function (h) {
+      return '[' + fmtTime(h.time) + '] ' + (h.ko || '(번역 없음)') + '   (' + h.orig + ')';
+    });
+    var text = lines.join('\n');
+    if (!text) return;
+    try {
+      navigator.clipboard.writeText(text);
+      var prev = copyBtn.textContent;
+      copyBtn.textContent = '복사됨!';
+      setTimeout(function () { copyBtn.textContent = prev; }, 1200);
+    } catch (e) {}
+  });
+
+  clearBtn.addEventListener('click', function () {
+    history = [];
+    transcriptEl.innerHTML = '';
+    transcriptEl.appendChild(emptyEl);
+  });
+
+  langSelect.addEventListener('change', function () {
+    if (recognition) recognition.lang = langSelect.value;
+  });
+
+  // Feature detection
+  if (!SpeechRecognitionImpl) {
+    setStatus('이 브라우저는 음성 인식을 지원하지 않습니다. 데스크톱 Chrome에서 열어주세요.', 'err');
+    toggleBtn.disabled = true;
+  } else if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.protocol !== 'file:') {
+    setStatus('마이크 접근에는 HTTPS 또는 로컬 파일 실행이 필요합니다.', 'warn');
+  } else {
+    setStatus('준비 완료 · "리스닝 시작"을 눌러주세요.');
+  }
+})();
+</script>
+
+</body>
+</html>
