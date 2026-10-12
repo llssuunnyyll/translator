@@ -238,6 +238,32 @@
     justify-content: flex-end;
   }
 
+  #settings {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 13px;
+  }
+  #settings label { display: flex; flex-direction: column; gap: 4px; color: var(--text-dim); font-size: 12px; }
+  #settings input, #settings textarea {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 16px; /* 16px prevents iOS Safari zoom-on-focus */
+  }
+  #settings textarea { min-height: 84px; resize: vertical; }
+  #settings .note { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; margin: 0; }
+  #settings .row { display: flex; gap: 8px; justify-content: flex-end; }
+  #engineTag { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); margin-right: auto; align-self: center; }
+
   @media (max-width: 480px) {
     header { padding-block: 14px 10px; }
     .controls { width: 100%; justify-content: space-between; }
@@ -281,9 +307,30 @@
 </main>
 
 <footer>
+  <span id="engineTag"></span>
+  <button id="settingsBtn">설정</button>
   <button id="copyBtn">전체 복사</button>
   <button id="clearBtn">지우기</button>
 </footer>
+
+<div id="settingsWrap" hidden style="padding-inline:0;">
+  <div id="settings">
+    <label>Anthropic API 키 (이 기기 브라우저에만 저장)
+      <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-ant-..." spellcheck="false">
+    </label>
+    <label>모델
+      <input id="modelInput" type="text" value="claude-haiku-4-5" spellcheck="false">
+    </label>
+    <label>용어집 (한 줄에 하나: 원어 = 한글)
+      <textarea id="glossaryInput" spellcheck="false" placeholder="notching = 노칭&#10;slitting = 슬리팅&#10;galvo scanner = 갈보 스캐너&#10;pulse width = 펄스 폭"></textarea>
+    </label>
+    <p class="note">키가 없으면 Google 무료 번역으로 동작합니다(품질 낮음). 키는 사용량 한도를 건 전용 키를 권장해요.</p>
+    <div class="row">
+      <button id="settingsClose">닫기</button>
+      <button id="settingsSave" style="background:var(--accent);color:#06211f;border-color:var(--accent-dim);">저장</button>
+    </div>
+  </div>
+</div>
 
 <script>
 (function () {
@@ -305,6 +352,9 @@
   var consecutiveErrors = 0;
   var interimEntryEl = null;
   var interimDebounce = null;
+  var interimAbort = null;
+  var claudeWarned = false;
+  var cfg = { apiKey: '', model: 'claude-haiku-4-5', glossary: '' };
   var interimSeq = 0; // guards against a stale translation overwriting a newer one
   var history = []; // {orig, ko, time}
 
@@ -344,20 +394,35 @@
 
     var mySeq = ++interimSeq;
     clearTimeout(interimDebounce);
+    if (interimAbort) { try { interimAbort.abort(); } catch (e) {} interimAbort = null; }
+    // Claude calls cost money and partial fragments translate poorly, so wait
+    // longer between previews than with the free engine, and skip tiny fragments.
+    var wait = cfg.apiKey ? 800 : 350;
+    if (cfg.apiKey && text.split(/\s+/).length < 4 && !/[぀-ヿ一-鿿]/.test(text)) return;
     interimDebounce = setTimeout(function () {
       if (mySeq !== interimSeq || !interimEntryEl) return; // superseded by newer speech
-      translateToKorean(text, langSelect.value)
+      var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      interimAbort = ctrl;
+      translateToKorean(text, langSelect.value, {
+        signal: ctrl && ctrl.signal,
+        onPartial: function (partial) {
+          if (mySeq !== interimSeq || !interimEntryEl) return;
+          var koEl = interimEntryEl.querySelector('.ko');
+          if (koEl) { koEl.textContent = partial; koEl.dataset.real = '1'; }
+        }
+      })
         .then(function (ko) {
           if (mySeq !== interimSeq || !interimEntryEl) return; // stale response, ignore
           var koEl = interimEntryEl.querySelector('.ko');
           if (koEl) { koEl.textContent = ko; koEl.dataset.real = '1'; }
         })
         .catch(function () { /* leave last good translation showing */ });
-    }, 350); // debounce so we don't fire a request on every single word
+    }, wait);
   }
 
   function clearInterim() {
     clearTimeout(interimDebounce);
+    if (interimAbort) { try { interimAbort.abort(); } catch (e) {} interimAbort = null; }
     if (interimEntryEl) {
       interimEntryEl.remove();
       interimEntryEl = null;
@@ -378,7 +443,13 @@
       '<div class="meta"><span>' + fmtTime(item.time) + '</span><span>·</span><span>' + item.lang + '</span></div>';
     transcriptEl.insertBefore(el, transcriptEl.firstChild);
 
-    translateToKorean(origText, langSelect.value)
+    var prior = history.slice(-4, -1).map(function (h) { return h.orig; });
+    translateToKorean(origText, langSelect.value, {
+      context: prior,
+      onPartial: function (partial) {
+        el.querySelector('.ko').textContent = partial;
+      }
+    })
       .then(function (ko) {
         item.ko = ko;
         el.classList.remove('pending');
@@ -430,12 +501,134 @@
       });
   }
 
-  function translateToKorean(text, sourceLangTag) {
-    var srcCode = sourceLangTag.split('-')[0];
-    return translateGoogle(text, srcCode).catch(function () {
-      return translateMyMemory(text, srcCode);
+  // ---- Claude (Anthropic Messages API, streaming) -------------------------
+  // Browser calls need the "direct browser access" opt-in header. The key is
+  // typed by the user and kept only in this browser's localStorage.
+  function translateClaude(text, sourceLangTag, opts) {
+    opts = opts || {};
+    var langName = (langSelect.options[langSelect.selectedIndex].text.split('(')[0] || sourceLangTag).trim();
+    var system =
+      'You are a live interpreter in a business meeting between a Korean company that makes laser ' +
+      'notching/slitting equipment for battery electrodes (laser, optics, galvo scanner, RTC control, ' +
+      'automation) and a foreign customer. Translate the customer\'s ' + langName + ' speech into natural, ' +
+      'polite spoken Korean. The input is raw speech-recognition output: it may contain recognition errors, ' +
+      'missing punctuation, or be an unfinished sentence — infer the intended meaning from context and ' +
+      'translate what has been said so far. Keep numbers, units and part names exact. ' +
+      'Output ONLY the Korean translation, with no notes or quotes.' +
+      (cfg.glossary ? '\n\nGlossary (use these translations):\n' + cfg.glossary : '');
+    var content = '';
+    if (opts.context && opts.context.length) {
+      content += 'Previous sentences (context only, do not translate):\n' + opts.context.join('\n') + '\n\n';
+    }
+    content += 'Translate this:\n' + text;
+
+    return fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: opts.signal || undefined,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': cfg.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: cfg.model || 'claude-haiku-4-5',
+        max_tokens: 400,
+        stream: true,
+        system: system,
+        messages: [{ role: 'user', content: content }]
+      })
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (t) { throw new Error('claude http ' + res.status + ' ' + t.slice(0, 120)); });
+      }
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '', out = '';
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) {
+            if (!out.trim()) throw new Error('empty translation');
+            return out.trim();
+          }
+          buf += decoder.decode(r.value, { stream: true });
+          var lines = buf.split('\n');
+          buf = lines.pop();
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (line.indexOf('data:') !== 0) continue;
+            try {
+              var ev = JSON.parse(line.slice(5));
+              if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') {
+                out += ev.delta.text;
+                if (opts.onPartial) opts.onPartial(out);
+              }
+            } catch (e) { /* ignore partial/non-JSON lines */ }
+          }
+          return pump();
+        });
+      }
+      return pump();
     });
   }
+
+  function translateToKorean(text, sourceLangTag, opts) {
+    var srcCode = sourceLangTag.split('-')[0];
+    function free() {
+      return translateGoogle(text, srcCode).catch(function () {
+        return translateMyMemory(text, srcCode);
+      });
+    }
+    if (cfg.apiKey) {
+      return translateClaude(text, sourceLangTag, opts).catch(function (e) {
+        if (e && e.name === 'AbortError') throw e;
+        if (!claudeWarned) {
+          claudeWarned = true;
+          setStatus('Claude 번역 실패(' + String(e.message).slice(0, 60) + ') → 무료 번역으로 대체', 'warn');
+        }
+        return free();
+      });
+    }
+    return free();
+  }
+
+  // ---- Settings -----------------------------------------------------------
+  var settingsWrap = document.getElementById('settingsWrap');
+  var apiKeyInput = document.getElementById('apiKeyInput');
+  var modelInput = document.getElementById('modelInput');
+  var glossaryInput = document.getElementById('glossaryInput');
+  var engineTag = document.getElementById('engineTag');
+
+  function loadCfg() {
+    try {
+      cfg.apiKey = localStorage.getItem('rt_api_key') || '';
+      cfg.model = localStorage.getItem('rt_model') || 'claude-haiku-4-5';
+      cfg.glossary = localStorage.getItem('rt_glossary') || '';
+    } catch (e) {}
+    apiKeyInput.value = cfg.apiKey;
+    modelInput.value = cfg.model;
+    glossaryInput.value = cfg.glossary;
+    engineTag.textContent = cfg.apiKey ? 'Claude 번역' : '무료 번역';
+  }
+  document.getElementById('settingsBtn').addEventListener('click', function () {
+    settingsWrap.hidden = !settingsWrap.hidden;
+    if (!settingsWrap.hidden) settingsWrap.scrollIntoView({ block: 'nearest' });
+  });
+  document.getElementById('settingsClose').addEventListener('click', function () { settingsWrap.hidden = true; });
+  document.getElementById('settingsSave').addEventListener('click', function () {
+    cfg.apiKey = apiKeyInput.value.trim();
+    cfg.model = modelInput.value.trim() || 'claude-haiku-4-5';
+    cfg.glossary = glossaryInput.value.trim();
+    claudeWarned = false;
+    try {
+      localStorage.setItem('rt_api_key', cfg.apiKey);
+      localStorage.setItem('rt_model', cfg.model);
+      localStorage.setItem('rt_glossary', cfg.glossary);
+    } catch (e) {}
+    engineTag.textContent = cfg.apiKey ? 'Claude 번역' : '무료 번역';
+    settingsWrap.hidden = true;
+  });
+  loadCfg();
 
   function buildRecognition() {
     var r = new SpeechRecognitionImpl();
